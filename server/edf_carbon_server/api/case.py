@@ -12,6 +12,7 @@ from edf_fusion.helper.aiohttp import (
 )
 from edf_fusion.helper.logging import get_logger
 from edf_fusion.helper.streaming import stream_from_text
+from edf_fusion.server.auth import Action
 from edf_fusion.server.case import (
     AttachContext,
     CreateContext,
@@ -112,9 +113,8 @@ async def api_case_categories_get(request: Request):
     case_guid = get_guid(request, 'case_guid')
     if not case_guid:
         return json_response(status=400, message="Invalid case GUID")
-    _, storage = await prologue(
-        request, 'case_categories', context={'case_guid': case_guid}
-    )
+    action = Action(name='case_categories', context={'case_guid': case_guid})
+    _, storage = await prologue(request, action)
     case = await storage.retrieve_case(case_guid)
     if not case:
         return json_response(status=404, message="Case not found")
@@ -136,11 +136,11 @@ async def api_case_tl_event_get(request: Request):
     tl_event_guid = get_guid(request, 'tl_event_guid')
     if not tl_event_guid:
         return json_response(status=400, message="Invalid timeline event GUID")
-    _, storage = await prologue(
-        request,
-        'retrieve_event',
+    action = Action(
+        name='retrieve_event',
         context={'case_guid': case_guid, 'tl_event_guid': tl_event_guid},
     )
+    _, storage = await prologue(request, action)
     tl_event = await storage.retrieve_tl_event(case_guid, tl_event_guid)
     if not tl_event:
         return json_response(status=404, message="Timeline event not found")
@@ -152,11 +152,10 @@ async def api_case_tl_event_post(request: Request):
     case_guid = get_guid(request, 'case_guid')
     if not case_guid:
         return json_response(status=400, message="Invalid case GUID")
-    identity, storage = await prologue(
-        request,
-        'create_event',
-        context={'case_guid': case_guid, 'case_open_check': True},
+    action = Action(
+        name='create_event', change=True, context={'case_guid': case_guid}
     )
+    identity, storage = await prologue(request, action)
     body = await get_json_body(request)
     if not body:
         return json_response(status=400, message="Body is missing")
@@ -183,15 +182,12 @@ async def api_case_tl_event_put(request: Request):
     tl_event_guid = get_guid(request, 'tl_event_guid')
     if not tl_event_guid:
         return json_response(status=400, message="Invalid timeline event GUID")
-    identity, storage = await prologue(
-        request,
-        'update_event',
-        context={
-            'case_guid': case_guid,
-            'tl_event_guid': tl_event_guid,
-            'case_open_check': True,
-        },
+    action = Action(
+        name='update_event',
+        change=True,
+        context={'case_guid': case_guid, 'tl_event_guid': tl_event_guid},
     )
+    _, storage = await prologue(request, action)
     body = await get_json_body(request)
     if not body:
         return json_response(status=400, message="Body is missing")
@@ -217,16 +213,13 @@ async def api_case_tl_event_delete(request: Request):
     tl_event_guid = get_guid(request, 'tl_event_guid')
     if not tl_event_guid:
         return json_response(status=400, message="Invalid timeline event GUID")
-    _, storage = await prologue(
-        request,
-        'delete_event',
-        context={
-            'case_guid': case_guid,
-            'tl_event_guid': tl_event_guid,
-            'case_open_check': True,
-            'is_delete_op': True,
-        },
+    action = Action(
+        name='delete_event',
+        change=True,
+        delete=True,
+        context={'case_guid': case_guid, 'tl_event_guid': tl_event_guid},
     )
+    _, storage = await prologue(request, action)
     deleted = await storage.delete_tl_event(case_guid, tl_event_guid)
     if not deleted:
         return json_response(status=400, message='Not deleted')
@@ -245,9 +238,8 @@ async def api_case_tl_events_get(request: Request):
     case_guid = get_guid(request, 'case_guid')
     if not case_guid:
         return json_response(status=400, message="Invalid case GUID")
-    _, storage = await prologue(
-        request, 'enumerate_events', context={'case_guid': case_guid}
-    )
+    action = Action(name='enumerate_events', context={'case_guid': case_guid})
+    _, storage = await prologue(request, action)
     return json_response(
         data=[
             tl_event.to_dict()
@@ -261,9 +253,8 @@ async def api_case_tl_events_export(request: Request):
     case_guid = _get_guid(request, 'case_guid')
     if not case_guid:
         return json_response(status=400, message="Invalid case GUID")
-    _, storage = await prologue(
-        request, 'export_events', context={'case_guid': case_guid}
-    )
+    action = Action(name='export_events', context={'case_guid': case_guid})
+    _, storage = await prologue(request, action)
     starred = 'starred' in request.query
     fields = request.query.getall('fields')
     markdown = [
@@ -297,15 +288,12 @@ async def api_case_restore_tl_event_put(request: Request):
     tl_event_guid = get_guid(request, 'tl_event_guid')
     if not tl_event_guid:
         return json_response(status=400, message="Invalid timeline event GUID")
-    identity, storage = await prologue(
-        request,
-        'update_event',
-        context={
-            'case_guid': case_guid,
-            'tl_event_guid': tl_event_guid,
-            'case_open_check': True,
-        },
+    action = Action(
+        name='update_event',
+        change=True,
+        context={'case_guid': case_guid, 'tl_event_guid': tl_event_guid},
     )
+    _, storage = await prologue(request, action)
     tl_event = await storage.retrieve_tl_event(case_guid, tl_event_guid)
     if not tl_event:
         return json_response(status=404, message="Timeline event not found")
@@ -355,11 +343,12 @@ async def api_case_star_tl_event_put(request: Request):
     tl_event_guid = _get_guid(request, 'tl_event_guid')
     if not tl_event_guid:
         return json_response(status=400, message="Invalid timeline event GUID")
-    identity, storage = await prologue(
-        request,
-        'star_event',
+    action = Action(
+        name='star_event',
+        change=True,
         context={'case_guid': case_guid, 'tl_event_guid': tl_event_guid},
     )
+    _, storage = await prologue(request, action)
     tl_event = await storage.retrieve_tl_event(case_guid, tl_event_guid)
     if not tl_event:
         return json_response(status=404, message="Timeline event not found")
@@ -388,15 +377,13 @@ async def api_case_trash_tl_event_put(request: Request):
     tl_event_guid = get_guid(request, 'tl_event_guid')
     if not tl_event_guid:
         return json_response(status=400, message="Invalid timeline event GUID")
-    identity, storage = await prologue(
-        request,
-        'trash_event',
-        context={
-            'case_guid': case_guid,
-            'tl_event_guid': tl_event_guid,
-            'case_open_check': True,
-        },
+    action = Action(
+        name='trash_event',
+        change=True,
+        delete=False,  # anyone can move to trash
+        context={'case_guid': case_guid, 'tl_event_guid': tl_event_guid},
     )
+    _, storage = await prologue(request, action)
     tl_event = await storage.retrieve_tl_event(case_guid, tl_event_guid)
     if not tl_event:
         return json_response(status=404, message="Timeline event not found")
@@ -441,9 +428,8 @@ async def api_case_trash_get(request: Request):
     case_guid = get_guid(request, 'case_guid')
     if not case_guid:
         return json_response(status=400, message="Invalid case GUID")
-    _, storage = await prologue(
-        request, 'trashed_events', context={'case_guid': case_guid}
-    )
+    action = Action(name='trashed_events', context={'case_guid': case_guid})
+    _, storage = await prologue(request, action)
     return json_response(
         data=[
             tl_event.to_dict()
@@ -459,11 +445,8 @@ async def api_case_users_get(request: Request):
     case_guid = get_guid(request, 'case_guid')
     if not case_guid:
         return json_response(status=400, message="Invalid case GUID")
-    _, storage = await prologue(
-        request,
-        'case_users',
-        context={'case_guid': case_guid},
-    )
+    action = Action(name='case_users', context={'case_guid': case_guid})
+    _, storage = await prologue(request, action)
     case = await storage.retrieve_case(case_guid)
     if not case:
         return json_response(status=404, message="Case not found")
@@ -477,7 +460,8 @@ async def api_case_users_get(request: Request):
 
 async def api_cases_stats_get(request: Request):
     """Retrieve cases stats (pending/total events)"""
-    _, storage = await prologue(request, 'cases_stats', context={})
+    action = Action(name='cases_stats')
+    _, storage = await prologue(request, action)
     return json_response(
         data=[stat.to_dict() async for stat in storage.enumerate_cases_stats()]
     )

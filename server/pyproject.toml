@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "edf-carbon-core~=3.0",
+    "edf-carbon-core~=4.0",
     "aiosqlite~=0.20",
 ]
 

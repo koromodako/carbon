@@ -21,7 +21,7 @@ from edf_fusion.server.storage import FusionStorage
 from .config import FusionStorageConfig
 
 _LOGGER = get_logger('server.storage', root='carbon')
-_MODEL_VERSION = 1
+_MODEL_VERSION = 2
 _CREATE_TABLE_CASE = f'''
 CREATE TABLE IF NOT EXISTS case_{_MODEL_VERSION} (
     guid TEXT PRIMARY KEY,
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS case_{_MODEL_VERSION} (
     name TEXT,
     description TEXT,
     acs TEXT,
-    utc_display INTEGER
+    utc_display INTEGER,
+    acs_ro TEXT
 )
 '''
 _CREATE_TABLE_EVENT = f'''
@@ -78,7 +79,8 @@ REPLACE INTO case_{_MODEL_VERSION} VALUES (
     :name,
     :description,
     :acs,
-    :utc_display
+    :utc_display,
+    :acs_ro
 )
 '''
 _REPLACE_TL_EVENT = f'''
@@ -147,10 +149,69 @@ _SELECT_TL_EVENT_TRASHED = f'''
 SELECT * FROM event_{_MODEL_VERSION}
 WHERE case_guid = :case_guid AND trashed = 1
 '''
+_SELECT_TABLE = '''
+SELECT name FROM sqlite_master
+WHERE type = 'table' AND name = :name
+'''
+
+
+async def _execute(
+    connection: Connection, statement: str, parameters: dict | None = None
+) -> int:
+    row_count = -1
+    parameters = parameters or {}
+    async with connection.execute(statement, parameters) as cursor:
+        row_count = cursor.rowcount
+        await cursor.close()
+    return row_count
+
+
+async def _fetchone(
+    connection: Connection, statement: str, parameters: dict | None = None
+) -> Row | None:
+    parameters = parameters or {}
+    async with connection.execute(statement, parameters) as cursor:
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row
+
+
+async def _fetchmany(
+    connection: Connection, statement: str, parameters: dict | None = None
+) -> AsyncIterator[Row]:
+    parameters = parameters or {}
+    async with connection.execute(statement, parameters) as cursor:
+        async for row in cursor:
+            yield row
+        await cursor.close()
+
+
+async def _migrate_1_to_2(connection: Connection):
+    async with connection.cursor() as cursor:
+        row = await _fetchone(connection, _SELECT_TABLE, {'name': 'case_1'})
+        if row:
+            _LOGGER.info("migrating cases...")
+            await cursor.execute('ALTER TABLE case_1 ADD COLUMN acs_ro TEXT')
+            await cursor.execute(
+                'UPDATE case_1 SET acs_ro = :acs_ro', {'acs_ro': '[]'}
+            )
+            await cursor.execute('ALTER TABLE case_1 RENAME TO case_2')
+        row = await _fetchone(connection, _SELECT_TABLE, {'name': 'event_1'})
+        if row:
+            _LOGGER.info("migrating events...")
+            await cursor.execute('ALTER TABLE event_1 RENAME TO event_2')
+            await cursor.execute('DROP INDEX event_1_idx')
+
+
+async def _migrate(connection: Connection):
+    _LOGGER.info("migrating...")
+    await _migrate_1_to_2(connection)
+    _LOGGER.info("migration done.")
 
 
 async def _init_db(connection: Connection):
     _LOGGER.info("initialize database...")
+    await _migrate(connection)
     async with connection.cursor() as cursor:
         for statement in (
             _CREATE_TABLE_CASE,
@@ -187,6 +248,7 @@ def _case_from_row(row: Row) -> Case:
         name=row['name'],
         description=row['description'],
         acs=set(load_json(row['acs'])),
+        acs_ro=set(load_json(row['acs_ro'])),
         utc_display=bool(row['utc_display']),
     )
 
@@ -224,34 +286,6 @@ class Storage(FusionStorage):
     config: FusionStorageConfig
     _connection: Connection | None = None
 
-    async def _execute(
-        self, statement: str, parameters: dict | None = None
-    ) -> int:
-        row_count = -1
-        parameters = parameters or {}
-        async with self._connection.execute(statement, parameters) as cursor:
-            row_count = cursor.rowcount
-            await cursor.close()
-        return row_count
-
-    async def _fetchone(
-        self, statement: str, parameters: dict | None = None
-    ) -> Row | None:
-        parameters = parameters or {}
-        async with self._connection.execute(statement, parameters) as cursor:
-            row = await cursor.fetchone()
-            await cursor.close()
-            return row
-
-    async def _fetchmany(
-        self, statement: str, parameters: dict | None = None
-    ) -> AsyncIterator[Row]:
-        parameters = parameters or {}
-        async with self._connection.execute(statement, parameters) as cursor:
-            async for row in cursor:
-                yield row
-            await cursor.close()
-
     async def context(self, webapp: Application):
         _LOGGER.info("sqlite storage starting up.")
         database = self.config.directory / 'carbon.db'
@@ -278,8 +312,8 @@ class Storage(FusionStorage):
             return False
         parameters = {'guid': str(case_guid), 'next_guid': str(next_case_guid)}
         try:
-            await self._execute(_ATTACH_TL_EVENT, parameters)
-            await self._execute(_ATTACH_CASE, parameters)
+            await _execute(self._connection, _ATTACH_TL_EVENT, parameters)
+            await _execute(self._connection, _ATTACH_CASE, parameters)
         except Error:
             _LOGGER.exception("failed to attach case")
             return False
@@ -305,7 +339,7 @@ class Storage(FusionStorage):
                 return None
         parameters = _parameters_from_concept(case)
         try:
-            await self._execute(_REPLACE_CASE, parameters)
+            await _execute(self._connection, _REPLACE_CASE, parameters)
         except Error:
             _LOGGER.exception("failed to create case")
             return None
@@ -318,7 +352,7 @@ class Storage(FusionStorage):
         case.update(dct)
         parameters = _parameters_from_concept(case)
         try:
-            await self._execute(_REPLACE_CASE, parameters)
+            await _execute(self._connection, _REPLACE_CASE, parameters)
         except Error:
             _LOGGER.exception("failed to update case")
             return None
@@ -327,13 +361,13 @@ class Storage(FusionStorage):
     async def delete_case(self, case_guid: UUID) -> bool:
         parameters = {'case_guid': str(case_guid)}
         try:
-            await self._execute(_DELETE_TL_EVENT_ALL, parameters)
+            await _execute(self._connection, _DELETE_TL_EVENT_ALL, parameters)
         except Error:
             _LOGGER.exception("failed to delete case events")
             return False
         parameters = {'guid': str(case_guid)}
         try:
-            await self._execute(_DELETE_CASE, parameters)
+            await _execute(self._connection, _DELETE_CASE, parameters)
         except Error:
             _LOGGER.exception("failed to delete case")
             return False
@@ -342,7 +376,9 @@ class Storage(FusionStorage):
     async def retrieve_case(self, case_guid: UUID) -> Case | None:
         parameters = {'guid': str(case_guid)}
         try:
-            row = await self._fetchone(_SELECT_CASE_ONE, parameters)
+            row = await _fetchone(
+                self._connection, _SELECT_CASE_ONE, parameters
+            )
         except Error:
             _LOGGER.exception("failed to retrieve case")
             return None
@@ -354,7 +390,7 @@ class Storage(FusionStorage):
 
     async def enumerate_cases(self) -> AsyncIterator[Case]:
         try:
-            async for row in self._fetchmany(_SELECT_CASE_ALL):
+            async for row in _fetchmany(self._connection, _SELECT_CASE_ALL):
                 case = _case_from_row(row)
                 yield case
         except Error:
@@ -390,7 +426,7 @@ class Storage(FusionStorage):
         parameters = _parameters_from_concept(tl_event)
         parameters['case_guid'] = str(case_guid)
         try:
-            await self._execute(_REPLACE_TL_EVENT, parameters)
+            await _execute(self._connection, _REPLACE_TL_EVENT, parameters)
         except Error:
             _LOGGER.exception("failed to create timeline event")
             return None
@@ -407,7 +443,7 @@ class Storage(FusionStorage):
         parameters = _parameters_from_concept(tl_event)
         parameters['case_guid'] = str(case_guid)
         try:
-            await self._execute(_REPLACE_TL_EVENT, parameters)
+            await _execute(self._connection, _REPLACE_TL_EVENT, parameters)
         except Error:
             _LOGGER.exception("failed to update timeline event")
             return None
@@ -419,7 +455,9 @@ class Storage(FusionStorage):
         """Delete timeline event"""
         parameters = {'guid': str(tl_event_guid), 'case_guid': str(case_guid)}
         try:
-            row_count = await self._execute(_DELETE_TL_EVENT_ONE, parameters)
+            row_count = await _execute(
+                self._connection, _DELETE_TL_EVENT_ONE, parameters
+            )
         except Error:
             _LOGGER.exception("failed to delete timeline event")
             return False
@@ -431,7 +469,9 @@ class Storage(FusionStorage):
         """Retrieve timeline event"""
         parameters = {'guid': str(tl_event_guid), 'case_guid': str(case_guid)}
         try:
-            row = await self._fetchone(_SELECT_TL_EVENT_ONE, parameters)
+            row = await _fetchone(
+                self._connection, _SELECT_TL_EVENT_ONE, parameters
+            )
         except Error:
             _LOGGER.exception("failed to retrieve timeline event")
             return None
@@ -447,8 +487,8 @@ class Storage(FusionStorage):
         """Retrieve closed timeline events"""
         parameters = {'case_guid': str(case_guid)}
         try:
-            async for row in self._fetchmany(
-                _SELECT_TL_EVENT_CLOSED, parameters
+            async for row in _fetchmany(
+                self._connection, _SELECT_TL_EVENT_CLOSED, parameters
             ):
                 yield row['closes']
         except Error:
@@ -461,7 +501,9 @@ class Storage(FusionStorage):
         """Enumerate timeline events"""
         parameters = {'case_guid': str(case_guid)}
         try:
-            async for row in self._fetchmany(_SELECT_TL_EVENT_ALL, parameters):
+            async for row in _fetchmany(
+                self._connection, _SELECT_TL_EVENT_ALL, parameters
+            ):
                 tl_event = _tl_event_from_row(row)
                 yield tl_event
         except Error:
@@ -474,8 +516,8 @@ class Storage(FusionStorage):
         """Enumerate trashed timeline event"""
         parameters = {'case_guid': str(case_guid)}
         try:
-            async for row in self._fetchmany(
-                _SELECT_TL_EVENT_TRASHED, parameters
+            async for row in _fetchmany(
+                self._connection, _SELECT_TL_EVENT_TRASHED, parameters
             ):
                 tl_event = _tl_event_from_row(row)
                 yield tl_event
@@ -486,7 +528,7 @@ class Storage(FusionStorage):
     async def enumerate_cases_stats(self) -> AsyncIterator[CaseStats]:
         """Enumerate case statistics"""
         try:
-            async for row in self._fetchmany(_SELECT_CASES_STATS):
+            async for row in _fetchmany(self._connection, _SELECT_CASES_STATS):
                 case = CaseStats(
                     guid=UUID(row['guid']),
                     pending=row['pending'],

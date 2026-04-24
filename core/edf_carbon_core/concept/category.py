@@ -19,7 +19,7 @@ class Category(Concept):
         return cls(
             name=dct['name'],
             icon=dct['icon'],
-            template=dct['template'],
+            template=dct.get('template'),
             groups=set(dct.get('groups', [])),
         )
 
