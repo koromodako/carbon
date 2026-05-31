@@ -21,7 +21,6 @@ classifiers = [
 ]
 dependencies = [
     "edf-carbon-core~=4.0",
-    "aiosqlite~=0.20",
 ]
 
 
