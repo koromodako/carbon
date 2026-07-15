@@ -407,7 +407,8 @@ class Storage(FusionStorage):
         """Delete timeline event"""
         parameters = {'guid': str(tl_event_guid), 'case_guid': str(case_guid)}
         try:
-            row_count = await self.database.execute( _DELETE_TL_EVENT_ONE, parameters
+            row_count = await self.database.execute(
+                _DELETE_TL_EVENT_ONE, parameters
             )
         except Error:
             _LOGGER.exception("failed to delete timeline event")
